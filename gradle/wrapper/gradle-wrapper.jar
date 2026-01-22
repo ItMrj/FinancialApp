@@ -1,0 +1,10 @@
+This is a placeholder file. The actual gradle-wrapper.jar needs to be downloaded from:
+https://services.gradle.org/distributions/gradle-8.5-bin.zip
+
+Or you can run the following command to generate it automatically:
+gradle wrapper --gradle-version 8.5
+
+For Windows users, you can also use:
+gradlew.bat wrapper --gradle-version 8.5
+
+The actual gradle-wrapper.jar file should be approximately 62KB.

@@ -1,0 +1,96 @@
+################################################################################
+# FinancialApp 生产环境 Dockerfile
+# 优化点：多阶段构建、非 root 用户、健康检查、JVM 优化
+################################################################################
+
+# ==================== 第一阶段：构建 ====================
+FROM openjdk:17-jdk-slim AS builder
+
+LABEL maintainer="FinancialApp Team"
+LABEL version="1.0.0"
+LABEL description="FinancialApp Backend Service"
+
+# 安装构建工具
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        unzip \
+        git \
+        && rm -rf /var/lib/apt/lists/*
+
+# 安装 Gradle
+ENV GRADLE_VERSION=8.5
+RUN wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip && \
+    unzip gradle-${GRADLE_VERSION}-bin.zip -d /opt && \
+    rm gradle-${GRADLE_VERSION}-bin.zip && \
+    ln -s /opt/gradle-${GRADLE_VERSION}/bin/gradle /usr/local/bin/gradle
+
+# 设置工作目录
+WORKDIR /build
+
+# 复制项目文件
+COPY build.gradle.kts settings.gradle.kts gradlew gradlew.bat ./
+COPY gradle ./gradle
+COPY src ./src
+
+# 给 gradlew 执行权限
+RUN chmod +x gradlew
+
+# 构建应用
+RUN ./gradlew clean build -x test --no-daemon --parallel || exit 1
+
+# ==================== 第二阶段：运行 ====================
+FROM openjdk:17-jre-slim
+
+LABEL maintainer="FinancialApp Team"
+
+# 安装必要的工具
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        tzdata \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 创建非 root 用户
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /bin/bash appuser
+
+# 设置工作目录
+WORKDIR /app
+
+# 从构建阶段复制 JAR 文件
+COPY --from=builder /build/build/libs/financial-app-1.0.0.jar app.jar
+
+# 创建必要的目录
+RUN mkdir -p /app/logs /app/uploads && \
+    chown -R appuser:appuser /app
+
+# 切换到非 root 用户
+USER appuser
+
+# JVM 参数优化（容器友好）
+ENV JAVA_OPTS="-XX:+UseContainerSupport \
+               -XX:MaxRAMPercentage=75.0 \
+               -XX:InitialRAMPercentage=50.0 \
+               -XX:+UseG1GC \
+               -XX:+UseStringDeduplication \
+               -XX:+OptimizeStringConcat \
+               -Djava.security.egd=file:/dev/./urandom \
+               -Dspring.profiles.active=prod"
+
+# 暴露端口
+EXPOSE 8080
+
+# 健康检查
+HEALTHCHECK --interval=30s \
+            --timeout=10s \
+            --start-period=60s \
+            --retries=3 \
+            CMD curl -f http://localhost:8080/api/actuator/health || exit 1
+
+# 启动应用
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

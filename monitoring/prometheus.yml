@@ -1,0 +1,61 @@
+################################################################################
+# Prometheus 配置文件
+################################################################################
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'financialapp-prod'
+    environment: 'production'
+
+# 告警规则文件（可选）
+# rule_files:
+#   - "alerts/*.yml"
+
+# 告警管理器（可选）
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - "alertmanager:9093"
+
+# 抓取配置
+scrape_configs:
+  # Prometheus 自身监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Spring Boot 应用监控
+  - job_name: 'financialapp'
+    metrics_path: '/api/actuator/prometheus'
+    static_configs:
+      - targets: ['financial-app-prod:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 'financial-app-prod:8080'
+
+  # Nginx 监控（需要 nginx-prometheus-exporter）
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # MySQL 监控（需要 mysqld_exporter）
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysql-exporter:9104']
+
+  # Redis 监控（需要 redis_exporter）
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # Node Exporter（服务器监控）
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RSA 加密测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #333; margin-bottom: 20px; }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .section h2 {
+            margin-top: 0;
+            color: #555;
+            font-size: 18px;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-size: 14px;
+        }
+        button:hover { background: #45a049; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.info { background: #d1ecf1; color: #0c5460; }
+        .test-result {
+            font-family: monospace;
+            font-size: 12px;
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 RSA 加密修复测试</h1>
+
+        <!-- 测试 1：获取公钥 -->
+        <div class="section">
+            <h2>测试 1：获取公钥</h2>
+            <button onclick="testGetPublicKey()">获取公钥</button>
+            <div id="status1" class="status info">等待测试...</div>
+            <div style="margin-top: 10px;">
+                <label>公钥内容：</label>
+                <textarea id="publicKey" readonly></textarea>
+            </div>
+        </div>
+
+        <!-- 测试 2：格式化公钥 -->
+        <div class="section">
+            <h2>测试 2：格式化公钥</h2>
+            <button onclick="testFormatPublicKey()">格式化公钥</button>
+            <div id="status2" class="status info">等待测试...</div>
+            <div style="margin-top: 10px;">
+                <label>格式化后的公钥：</label>
+                <textarea id="formattedPublicKey" readonly></textarea>
+            </div>
+        </div>
+
+        <!-- 测试 3：测试加密 -->
+        <div class="section">
+            <h2>测试 3：JSEncrypt 加密测试</h2>
+            <input type="text" id="testPassword" value="test123" placeholder="输入测试密码" style="padding: 10px; width: 200px; border: 1px solid #ccc; border-radius: 4px;">
+            <button onclick="testEncryption()">加密测试</button>
+            <div id="status3" class="status info">等待测试...</div>
+            <div class="test-result" id="encryptionResult"></div>
+        </div>
+
+        <!-- 测试 4：完整登录测试 -->
+        <div class="section">
+            <h2>测试 4：完整登录测试</h2>
+            <input type="text" id="testUsername" value="admin" placeholder="用户名" style="padding: 10px; width: 150px; border: 1px solid #ccc; border-radius: 4px;">
+            <input type="password" id="testPasswordLogin" value="admin123" placeholder="密码" style="padding: 10px; width: 150px; border: 1px solid #ccc; border-radius: 4px;">
+            <button onclick="testLogin()">登录测试</button>
+            <div id="status4" class="status info">等待测试...</div>
+            <div class="test-result" id="loginResult"></div>
+        </div>
+
+        <!-- 测试总结 -->
+        <div class="section">
+            <h2>📊 测试总结</h2>
+            <div id="summary" class="test-result">点击上方按钮开始测试...</div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsencrypt/3.3.2/jsencrypt.min.js"></script>
+    <script>
+        let testResults = {
+            publicKey: false,
+            formatPublicKey: false,
+            encryption: false,
+            login: false
+        };
+
+        // 确保 PEM 格式正确（包含换行符）
+        function ensureValidPemFormat(publicKey) {
+            const cleanKey = publicKey.trim();
+
+            if (cleanKey.includes('-----BEGIN PUBLIC KEY-----') &&
+                cleanKey.includes('-----END PUBLIC KEY-----') &&
+                !cleanKey.includes('\n')) {
+
+                const start = '-----BEGIN PUBLIC KEY-----';
+                const end = '-----END PUBLIC KEY-----';
+                const base64Part = cleanKey
+                    .substring(start.length)
+                    .substring(0, cleanKey.length - start.length - end.length)
+                    .trim();
+
+                const formattedBase64 = base64Part.match(/.{1,64}/g).join('\n');
+                return `${start}\n${formattedBase64}\n${end}`;
+            }
+
+            return cleanKey;
+        }
+
+        // 显示状态
+        function showStatus(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `status ${type}`;
+        }
+
+        // 更新总结
+        function updateSummary() {
+            const results = [
+                `✓ 获取公钥: ${testResults.publicKey ? '通过' : '失败'}`,
+                `✓ 格式化公钥: ${testResults.formatPublicKey ? '通过' : '失败'}`,
+                `✓ 加密测试: ${testResults.encryption ? '通过' : '失败'}`,
+                `✓ 登录测试: ${testResults.login ? '通过' : '失败/未测试'}`
+            ];
+
+            const allPassed = testResults.publicKey && testResults.formatPublicKey && testResults.encryption;
+            const summary = results.join('\n') + '\n\n' + (allPassed ? '🎉 所有测试通过！RSA 加密修复成功！' : '❌ 部分测试失败，请检查错误信息。');
+
+            document.getElementById('summary').textContent = summary;
+        }
+
+        // 测试 1：获取公钥
+        async function testGetPublicKey() {
+            try {
+                showStatus('status1', '正在获取公钥...', 'info');
+
+                const response = await fetch('http://localhost:8080/api/rsa/public-key');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                const publicKey = data.data.publicKey;
+
+                document.getElementById('publicKey').value = publicKey;
+
+                console.log('原始公钥长度:', publicKey.length);
+                console.log('包含换行符:', publicKey.includes('\n'));
+                console.log('公钥格式:', data.data);
+
+                showStatus('status1', '✓ 公钥获取成功！', 'success');
+                testResults.publicKey = true;
+            } catch (error) {
+                console.error('获取公钥失败:', error);
+                showStatus('status1', `✗ 获取公钥失败: ${error.message}`, 'error');
+                testResults.publicKey = false;
+            }
+
+            updateSummary();
+        }
+
+        // 测试 2：格式化公钥
+        function testFormatPublicKey() {
+            try {
+                const publicKey = document.getElementById('publicKey').value;
+
+                if (!publicKey) {
+                    throw new Error('请先获取公钥');
+                }
+
+                showStatus('status2', '正在格式化公钥...', 'info');
+
+                const formattedKey = ensureValidPemFormat(publicKey);
+                document.getElementById('formattedPublicKey').value = formattedKey;
+
+                console.log('格式化后公钥长度:', formattedKey.length);
+                console.log('格式化后包含换行符:', formattedKey.includes('\n'));
+
+                showStatus('status2', '✓ 公钥格式化成功！', 'success');
+                testResults.formatPublicKey = true;
+            } catch (error) {
+                console.error('格式化公钥失败:', error);
+                showStatus('status2', `✗ 格式化失败: ${error.message}`, 'error');
+                testResults.formatPublicKey = false;
+            }
+
+            updateSummary();
+        }
+
+        // 测试 3：加密测试
+        function testEncryption() {
+            try {
+                const formattedKey = document.getElementById('formattedPublicKey').value;
+                const password = document.getElementById('testPassword').value;
+
+                if (!formattedKey) {
+                    throw new Error('请先格式化公钥');
+                }
+
+                showStatus('status3', '正在加密测试...', 'info');
+
+                const encrypt = new JSEncrypt();
+                encrypt.setPublicKey(formattedKey);
+
+                const encrypted = encrypt.encrypt(password);
+
+                if (encrypted === false) {
+                    throw new Error('JSEncrypt 加密失败，公钥格式可能不正确');
+                }
+
+                const result = {
+                    原始密码: password,
+                    加密结果: encrypted.substring(0, 50) + '...',
+                    密文长度: encrypted.length,
+                    加密状态: '成功'
+                };
+
+                document.getElementById('encryptionResult').textContent = JSON.stringify(result, null, 2);
+
+                showStatus('status3', '✓ 加密测试成功！', 'success');
+                testResults.encryption = true;
+            } catch (error) {
+                console.error('加密测试失败:', error);
+                document.getElementById('encryptionResult').textContent = `错误: ${error.message}`;
+                showStatus('status3', `✗ 加密测试失败: ${error.message}`, 'error');
+                testResults.encryption = false;
+            }
+
+            updateSummary();
+        }
+
+        // 测试 4：完整登录测试
+        async function testLogin() {
+            try {
+                const formattedKey = document.getElementById('formattedPublicKey').value;
+                const username = document.getElementById('testUsername').value;
+                const password = document.getElementById('testPasswordLogin').value;
+
+                if (!formattedKey) {
+                    throw new Error('请先格式化公钥');
+                }
+
+                showStatus('status4', '正在执行登录测试...', 'info');
+
+                // 加密密码
+                const encrypt = new JSEncrypt();
+                encrypt.setPublicKey(formattedKey);
+                const encryptedPassword = encrypt.encrypt(password);
+
+                if (encryptedPassword === false) {
+                    throw new Error('密码加密失败');
+                }
+
+                // 发送登录请求
+                const requestBody = {
+                    username: username,
+                    password: encryptedPassword,
+                    encrypted: true
+                };
+
+                const response = await fetch('http://localhost:8080/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const responseData = await response.json();
+
+                const result = {
+                    请求URL: 'http://localhost:8080/api/auth/login',
+                    请求体: {
+                        username: username,
+                        password: encryptedPassword.substring(0, 50) + '...',
+                        encrypted: true
+                    },
+                    响应状态: response.status,
+                    响应数据: responseData
+                };
+
+                document.getElementById('loginResult').textContent = JSON.stringify(result, null, 2);
+
+                if (response.ok && responseData.success) {
+                    showStatus('status4', '✓ 登录测试成功！', 'success');
+                    testResults.login = true;
+                } else {
+                    throw new Error(`登录失败: ${responseData.message || '未知错误'}`);
+                }
+            } catch (error) {
+                console.error('登录测试失败:', error);
+                showStatus('status4', `✗ 登录测试失败: ${error.message}`, 'error');
+                testResults.login = false;
+            }
+
+            updateSummary();
+        }
+
+        // 页面加载时自动执行测试
+        window.addEventListener('load', async function() {
+            console.log('页面加载完成，开始自动测试...');
+
+            // 自动执行测试 1
+            await testGetPublicKey();
+
+            // 延迟 500ms 后执行测试 2
+            setTimeout(() => {
+                testFormatPublicKey();
+            }, 500);
+
+            // 延迟 1000ms 后执行测试 3
+            setTimeout(() => {
+                testEncryption();
+            }, 1000);
+        });
+    </script>
+</body>
+</html>

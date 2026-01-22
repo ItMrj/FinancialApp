@@ -1,0 +1,138 @@
+spring:
+  application:
+    name: financial-app
+
+  # 数据源配置 - 生产环境
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:financial_app}?useUnicode=true&characterEncoding=utf8&useSSL=true&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:financial_user}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      # 生产环境连接池配置优化
+      leak-detection-threshold: 60000
+
+  # JPA 配置 - 生产环境
+  jpa:
+    hibernate:
+      ddl-auto: validate  # 生产环境使用 validate，不允许自动修改数据库结构
+    show-sql: false      # 生产环境关闭 SQL 日志
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: false
+    open-in-view: false
+
+  # Redis 配置 - 生产环境
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      timeout: 5000
+      lettuce:
+        pool:
+          max-active: 20
+          max-wait: -1
+          max-idle: 10
+          min-idle: 5
+
+# 服务器配置
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  # 生产环境 Tomcat 优化
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+    max-connections: 8192
+    accept-count: 100
+    connection-timeout: 20000
+
+# 应用配置
+app:
+  jwt:
+    # 从环境变量读取，更安全
+    secret: ${JWT_SECRET}
+    expiration: 86400000  # 24小时
+    refresh-expiration: 604800000  # 7天
+  cors:
+    # 生产环境需要配置实际的前端域名
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+    allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+    allowed-headers: "*"
+    allow-credentials: true
+    max-age: 3600
+  upload:
+    location: ${UPLOAD_LOCATION:/app/uploads}
+    url-prefix: /uploads
+    max-file-size: 5242880  # 5MB
+
+# RSA加密配置 - 生产环境
+rsa:
+  public-key: |
+    ${RSA_PUBLIC_KEY}
+  private-key: |
+    ${RSA_PRIVATE_KEY}
+
+# 日志配置 - 生产环境
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{36}) - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: ${LOG_PATH:/app/logs}/financial-app.log
+    max-size: 100MB
+    max-history: 30
+    total-size-cap: 1GB
+  level:
+    root: INFO
+    com.financialapp: INFO
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+
+# Actuator 监控配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: when-authorized
+      show-components: always
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5, 0.95, 0.99
+    tags:
+      application: ${spring.application.name}
+      environment: prod
+
+# SpringDoc 配置 - 生产环境
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: ${SWAGGER_ENABLED:false}  # 生产环境默认关闭
+  packages-to-scan: com.financialapp.controller

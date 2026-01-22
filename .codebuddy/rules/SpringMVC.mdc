@@ -1,0 +1,874 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-01-16T03:15:09.418Z
+provider: 
+---
+
+# FinancialApp 项目开发规范（Spring MVC + JPA/Hibernate + Docker + Gradle + JUnit）
+
+## 📖 规则说明
+
+**分级体系**：
+- `MUST` 必须 - 强制执行，违反会导致严重问题
+- `SHOULD` 强烈建议 - 除非有充分理由，否则必须遵守
+- `MAY` 可选 - 根据项目需求灵活选择
+
+**目标**：规范不仅是"写得对"，更要能通过 Gradle/CI/Docker 直接落地执行。
+
+---
+
+## 1️⃣ 工程结构（推荐分层架构）
+
+### 当前项目结构
+```
+src/main/kotlin/com/financialapp/
+  FinancialAppApplication.kt          # 应用入口
+  config/                             # 配置层
+    JpaConfig.kt
+    SecurityConfig.kt
+    RSAConfig.kt
+    FileUploadConfig.kt
+    WebConfig.kt
+  controller/                         # Web 层：HTTP 适配
+    AuthController.kt
+    UserController.kt
+    RSAController.kt
+  service/                            # 业务服务层
+    AuthService.kt
+    UserService.kt
+    FileStorageService.kt
+    RSAService.kt
+  repository/                         # 数据访问层
+    UserRepository.kt
+  entity/                             # JPA 实体（不直接暴露给外部）
+    User.kt
+  dto/                                # 数据传输对象
+    request/                          # 请求 DTO
+    response/                         # 响应 DTO
+  exception/                          # 异常处理
+    BusinessException.kt
+    GlobalExceptionHandler.kt
+  filter/                             # 过滤器
+    RequestLoggingFilter.kt
+  security/                           # 安全相关
+    JwtTokenProvider.kt
+    JwtAuthenticationFilter.kt
+    CustomUserDetailsService.kt
+    CustomAuthenticationEntryPoint.kt
+    UserDetailsImpl.kt
+  util/                               # 工具类
+    ResponseUtil.kt
+    RSAUtil.kt
+src/main/resources/
+  application.yml                     # 主配置文件
+  application-dev.yml                 # 开发环境配置
+  application-prod.yml                # 生产环境配置
+src/test/kotlin/...                   # 测试代码
+```
+
+### 分层职责说明
+
+| 层级 | 职责 | 说明 |
+|------|------|------|
+| **Controller** | HTTP 适配 | 参数校验、鉴权、调用 Service、返回响应 |
+| **Service** | 业务逻辑 | 用例编排、事务管理、业务规则处理 |
+| **Repository** | 数据访问 | 数据库操作、查询封装 |
+| **Entity** | 持久化模型 | JPA 映射，不直接暴露给 API |
+| **DTO** | 数据传输 | API 请求/响应对象，与 Entity 解耦 |
+
+### 规范要求
+
+- ✅ **MUST** Controller 保持薄：只做参数校验、鉴权、调用 Service、返回响应
+- ✅ **MUST** Entity 不得直接暴露给 API Response，必须映射到 DTO
+- ✅ **MUST** 使用构造器注入，禁止字段注入（`@Autowired lateinit var`）
+- ✅ **SHOULD** 事务边界明确：`@Transactional` 放在 Service 方法上
+- ✅ **SHOULD** 避免使用 `!!`，外部输入必须校验
+
+---
+
+## 2️⃣ Kotlin + Spring 使用规范
+
+### 2.1 依赖注入
+
+**✅ 推荐（构造器注入）**：
+```kotlin
+@Service
+class UserService(
+    private val userRepository: UserRepository,
+    private val passwordEncoder: PasswordEncoder
+) {
+    // 业务逻辑
+}
+```
+
+**❌ 禁止（字段注入）**：
+```kotlin
+@Service
+class UserService {
+    @Autowired
+    private lateinit var userRepository: UserRepository  // ❌ 禁止
+}
+```
+
+### 2.2 Controller 规范
+
+```kotlin
+@RestController
+@RequestMapping("/users")
+class UserController(
+    private val userService: UserService
+) {
+    @GetMapping("/{id}")
+    fun getUserById(@PathVariable id: Long): ResponseEntity<ApiResponse<UserResponse>> {
+        val user = userService.getUserById(id)
+        return ResponseEntity.ok(ApiResponse.success(user))
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    fun createUser(@Valid @RequestBody request: UserCreateRequest): ApiResponse<UserResponse> {
+        val user = userService.createUser(request)
+        return ApiResponse.success(user)
+    }
+}
+```
+
+### 2.3 统一异常处理
+
+项目已实现 `GlobalExceptionHandler`，标准错误响应格式：
+
+```json
+{
+  "timestamp": "2024-01-16T10:30:00",
+  "status": 400,
+  "error": "Validation Error",
+  "message": "请求参数验证失败",
+  "errors": {
+    "username": "用户名不能为空"
+  }
+}
+```
+
+**当前已处理的异常类型**：
+- ✅ `BusinessException` - 业务异常
+- ✅ `BadCredentialsException` - 认证失败
+- ✅ `AuthenticationException` - 认证异常
+- ✅ `MethodArgumentNotValidException` - 参数校验异常
+- ✅ `Exception` - 通用异常
+
+**规范要求**：
+- ✅ **MUST** 所有异常通过 `@RestControllerAdvice` 统一处理
+- ✅ **MUST** 错误响应脱敏：不返回堆栈信息给客户端
+- ✅ **MUST** 内部日志保留完整错误信息便于排查
+- ✅ **SHOULD** 使用自定义业务异常（`BusinessException`）处理业务错误
+
+---
+
+## 3️⃣ JPA/Hibernate 规则（数据库操作）
+
+### 3.1 核心配置
+
+**✅ 当前配置（符合规范）**：
+```yaml
+spring:
+  jpa:
+    open-in-view: false              # ✅ 已禁用 OSIV
+    hibernate:
+      ddl-auto: update               # ⚠️ 生产环境应改为 validate/none
+    show-sql: true                   # ✅ 开发环境启用
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true             # ✅ 格式化 SQL
+```
+
+**规范要求**：
+- ✅ **MUST** 禁用 OSIV：`spring.jpa.open-in-view=false`
+- ✅ **MUST** 生产环境禁用 `ddl-auto: update`，使用 Flyway 管理数据库变更
+- ✅ **MUST** 所有 schema 变更必须通过 Flyway 脚本，禁止直接修改数据库
+
+### 3.2 N+1 查询问题防范
+
+**✅ 避免策略**：
+```kotlin
+// ❌ 错误：会产生 N+1 问题
+val users = userRepository.findAll()
+users.forEach { println(it.role.name) }  // 每个用户都触发一次查询
+
+// ✅ 方案1：使用 JOIN FETCH
+@Query("SELECT u FROM User u LEFT JOIN FETCH u.role")
+fun findAllWithRoles(): List<User>
+
+// ✅ 方案2：使用 @EntityGraph
+@EntityGraph(attributePaths = ["role"])
+fun findAll(): List<User>
+
+// ✅ 方案3：批量抓取
+@Query("SELECT u FROM User u WHERE u.id IN :ids")
+fun findByIds(@Param("ids") ids: List<Long>): List<User>
+```
+
+**规范要求**：
+- ✅ **MUST** 列表查询必须检查 SQL，避免 N+1 问题
+- ✅ **MUST** 需要关联数据时使用 `JOIN FETCH` / `@EntityGraph` / 批量抓取
+- ✅ **SHOULD** 分页查询避免 fetch join，使用 DTO 投影或两段查询
+
+### 3.3 级联操作与关系映射
+
+**规范要求**：
+- ✅ **MUST** `cascade` 只在聚合边界内使用，禁止全局级联
+- ✅ **MUST** 明确关系映射：`@OneToMany`、`@ManyToOne`、`@ManyToMany`
+- ✅ **SHOULD** 核心聚合使用 `@Version` 乐观锁
+
+```kotlin
+@Entity
+data class User(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long? = null,
+
+    @Version  // 乐观锁
+    var version: Int = 0,
+
+    @OneToMany(mappedBy = "user", cascade = [CascadeType.ALL], orphanRemoval = true)
+    val orders: MutableList<Order> = mutableListOf()  // ✅ 聚合内级联
+)
+```
+
+### 3.4 数据库迁移
+
+**推荐使用 Flyway**（当前项目尚未实现）：
+
+```
+src/main/resources/db/migration/
+  V1__create_users_table.sql
+  V2__create_orders_table.sql
+  V3__add_user_status_field.sql
+```
+
+**Gradle 依赖**：
+```kotlin
+implementation("org.flywaydb:flyway-core")
+implementation("org.flywaydb:flyway-mysql")
+```
+
+---
+
+## 4️⃣ 配置与属性管理
+
+### 4.1 配置文件分离
+
+**✅ 当前实现**：
+```
+src/main/resources/
+  application.yml              # 主配置
+  application-dev.yml          # 开发环境
+  application-prod.yml         # 生产环境（需创建）
+```
+
+**规范要求**：
+- ✅ **MUST** 使用 profile 分离环境配置
+- ✅ **MUST** 敏感配置（密码、密钥）通过环境变量注入
+- ✅ **MUST** 生产环境配置禁止提交到代码仓库
+
+### 4.2 类型安全的配置属性
+
+**推荐使用 `@ConfigurationProperties`**（当前可改进）：
+
+```kotlin
+@Configuration
+@ConfigurationProperties(prefix = "app")
+@Validated
+data class AppProperties(
+    val jwt: JwtProperties,
+    val cors: CorsProperties,
+    val upload: UploadProperties
+) {
+    data class JwtProperties(
+        @NotBlank
+        val secret: String,
+        @Min(3600000)
+        val expiration: Long
+    )
+
+    data class CorsProperties(
+        val allowedOrigins: List<String>,
+        val allowedMethods: List<String>,
+        val allowCredentials: Boolean = true
+    )
+
+    data class UploadProperties(
+        val location: String,
+        val maxFileSize: Long
+    )
+}
+```
+
+**使用方式**：
+```kotlin
+@Service
+class FileStorageService(
+    private val appProperties: AppProperties
+) {
+    private val uploadLocation = Path.of(appProperties.upload.location)
+}
+```
+
+**规范要求**：
+- ✅ **MUST** 使用 `@ConfigurationProperties` + `@Validated` 管理配置
+- ✅ **SHOULD** 为外部依赖（DB/HTTP）提供默认值与校验
+- ❌ **禁止** 散落使用 `@Value` 注解
+
+---
+
+## 5️⃣ 日志、监控、健康检查
+
+### 5.1 当前配置
+
+**✅ 日志配置（已实现）**：
+```yaml
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{36}) - %msg%n"
+  level:
+    root: INFO
+    com.financialapp: DEBUG
+    org.hibernate.SQL: DEBUG
+```
+
+**规范要求**：
+- ✅ **MUST** 日志可观测：包含时间戳、线程、日志级别、类名
+- ✅ **MUST** 禁止打印敏感字段（token/password）
+- ⚠️ **SHOULD** 接入 Actuator（当前未实现）
+
+### 5.2 Actuator 监控（待实现）
+
+**添加依赖**：
+```kotlin
+implementation("org.springframework.boot:spring-boot-starter-actuator")
+```
+
+**配置**：
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true  # 启用 liveness/readiness 探针
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+```
+
+**健康检查端点**：
+- `/actuator/health/liveness` - 存活探针
+- `/actuator/health/readiness` - 就绪探针
+- `/actuator/health` - 综合健康状态
+
+**规范要求**：
+- ⚠️ **MUST** 接入 Actuator 并启用 liveness/readiness（待实现）
+- ✅ **SHOULD** 使用 Micrometer 指标（可选）
+- ✅ **MAY** 接入 OpenTelemetry 链路追踪（后续扩展）
+
+---
+
+## 6️⃣ 安全规范
+
+### 6.1 Spring Security 配置
+
+**✅ 当前已实现**：
+```kotlin
+@Configuration
+@EnableWebSecurity
+class SecurityConfig(
+    private val jwtAuthenticationFilter: JwtAuthenticationFilter,
+    private val authenticationEntryPoint: CustomAuthenticationEntryPoint
+) {
+    @Bean
+    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
+        http
+            .csrf { it.disable() }
+            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .authorizeHttpRequests {
+                it.requestMatchers("/api/auth/**").permitAll()
+                  .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                  .anyRequest().authenticated()
+            }
+            .exceptionHandling { it.authenticationEntryPoint(authenticationEntryPoint) }
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
+        return http.build()
+    }
+}
+```
+
+**规范要求**：
+- ✅ **MUST** 使用 Spring Security 保护 API
+- ✅ **MUST** 明确公开路径与受保护路径
+- ✅ **MUST** 使用 JWT 进行无状态认证
+
+### 6.2 输入校验
+
+**✅ 已集成 Bean Validation**：
+```kotlin
+@RestController
+class UserController(
+    private val userService: UserService
+) {
+    @PostMapping
+    fun createUser(@Valid @RequestBody request: UserCreateRequest): ApiResponse<UserResponse> {
+        // 自动校验请求参数
+    }
+}
+
+data class UserCreateRequest(
+    @field:NotBlank(message = "用户名不能为空")
+    @field:Size(min = 3, max = 20, message = "用户名长度必须在3-20之间")
+    val username: String,
+
+    @field:NotBlank(message = "邮箱不能为空")
+    @field:Email(message = "邮箱格式不正确")
+    val email: String,
+
+    @field:NotBlank(message = "密码不能为空")
+    @field:Size(min = 6, message = "密码至少6位")
+    val password: String
+)
+```
+
+**规范要求**：
+- ✅ **MUST** 所有外部输入使用 `@Valid` + 约束注解
+- ✅ **MUST** Controller 方法参数添加 `@Valid`
+- ✅ **SHOULD** 自定义校验注解处理复杂业务规则
+
+### 6.3 错误响应脱敏
+
+**✅ 已实现**：
+- ✅ 客户端只返回标准错误体，不包含堆栈
+- ✅ 服务端日志保留完整错误信息
+
+**规范要求**：
+- ✅ **MUST** 错误响应脱敏，堆栈不直接返回客户端
+- ✅ **MUST** 日志记录 requestId/traceId 便于定位（待实现）
+- ✅ **SHOULD** CI 引入依赖漏洞扫描
+
+---
+
+## 7️⃣ API 文档
+
+### 7.1 SpringDoc OpenAPI
+
+**✅ 已集成 SpringDoc**：
+```yaml
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+  packages-to-scan: com.financialapp.controller
+```
+
+**访问地址**：
+- Swagger UI: http://localhost:8080/api/swagger-ui.html
+- OpenAPI JSON: http://localhost:8080/api/v3/api-docs
+
+**使用注解**：
+```kotlin
+@RestController
+@RequestMapping("/users")
+@Tag(name = "用户管理", description = "用户增删改查接口")
+class UserController {
+
+    @Operation(summary = "获取用户详情", description = "根据 ID 获取用户信息")
+    @ApiResponses(
+        value = [
+            ApiResponse(responseCode = "200", description = "成功"),
+            ApiResponse(responseCode = "404", description = "用户不存在")
+        ]
+    )
+    @GetMapping("/{id}")
+    fun getUserById(@PathVariable id: Long): ResponseEntity<ApiResponse<UserResponse>>
+
+    @Operation(summary = "创建用户")
+    @PostMapping
+    fun createUser(
+        @Valid @RequestBody request: UserCreateRequest,
+        @Parameter(description = "用户创建请求参数")  // 可选描述
+    ): ResponseEntity<ApiResponse<UserResponse>>
+}
+```
+
+**规范要求**：
+- ✅ **MUST** 使用 springdoc-openapi 生成文档
+- ✅ **SHOULD** 为 API 提供清晰的 summary 和 description
+- ✅ **SHOULD** 统一错误码、分页、鉴权方式说明
+
+---
+
+## 8️⃣ Gradle 构建规范
+
+### 8.1 当前配置
+
+**✅ 已使用 Gradle（Kotlin DSL）**：
+```kotlin
+plugins {
+    id("org.springframework.boot") version "3.2.0"
+    id("io.spring.dependency-management") version "1.1.4"
+    kotlin("jvm") version "1.9.20"
+    kotlin("plugin.spring") version "1.9.20"
+    kotlin("plugin.jpa") version "1.9.20"
+}
+
+group = "com.financialapp"
+version = "1.0.0"
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+}
+```
+
+**规范要求**：
+- ✅ **MUST** 固定 JDK/Kotlin/Spring Boot 版本
+- ✅ **MUST** 使用 Kotlin DSL（`.kts` 文件）
+- ⚠️ **SHOULD** 启用依赖版本校验（待实现）
+
+### 8.2 代码质量插件（待实现）
+
+**推荐添加的插件**：
+
+```kotlin
+plugins {
+    // Detekt：Kotlin 静态代码检查
+    id("io.gitlab.arturbosch.detekt") version "1.23.4"
+
+    // Ktlint：Kotlin 代码格式化
+    id("org.jlleitschuh.gradle.ktlint") version "12.1.0"
+
+    // JaCoCo：代码覆盖率
+    jacoco
+}
+
+// Detekt 配置
+detekt {
+    config.setFrom(files("$projectDir/config/detekt/detekt.yml"))
+    buildUponDefaultConfig = true
+}
+
+// JaCoCo 配置
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.map {
+            fileTree(it) {
+                exclude(
+                    "**/config/**",
+                    "**/dto/**",
+                    "**/entity/**",
+                    "**/Application.kt"
+                )
+            }
+        }))
+    }
+}
+
+// 覆盖率检查
+tasks.jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = "0.70".toBigDecimal()  // 70% 覆盖率
+            }
+        }
+        rule {
+            element = "PACKAGE"
+            includes = listOf("com.financialapp.service.*", "com.financialapp.repository.*")
+            limit {
+                minimum = "0.80".toBigDecimal()  // 关键包 80%
+            }
+        }
+    }
+}
+
+// 将覆盖率验证绑定到测试任务
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+```
+
+### 8.3 测试规范
+
+**当前测试依赖**：
+```kotlin
+testImplementation("org.springframework.boot:spring-boot-starter-test")
+testImplementation("org.springframework.security:spring-security-test")
+```
+
+**规范要求**：
+- ✅ **MUST** 使用 JUnit 5 进行单元测试
+- ✅ **MUST** domain/service 层单测覆盖核心业务规则
+- ⚠️ **SHOULD** repository 层使用 Testcontainers 集成测试（待实现）
+- ✅ **SHOULD** controller 层使用 MockMvc 测试 API 合同
+
+**测试示例**：
+```kotlin
+@SpringBootTest
+@AutoConfigureMockMvc
+class UserControllerTest {
+
+    @Autowired
+    private lateinit var mockMvc: MockMvc
+
+    @MockBean
+    private lateinit var userService: UserService
+
+    @Test
+    fun `should return user when user exists`() {
+        // Given
+        val user = UserResponse(1L, "testuser", "test@example.com")
+        `when`(userService.getUserById(1L)).thenReturn(user)
+
+        // When & Then
+        mockMvc.perform(get("/users/1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.data.username").value("testuser"))
+    }
+}
+```
+
+---
+
+## 9️⃣ Docker 构建与运行
+
+### 9.1 Dockerfile（当前已实现）
+
+**✅ 当前配置**：
+```dockerfile
+FROM openjdk:17-jdk-slim
+LABEL maintainer="FinancialApp Team"
+WORKDIR /app
+COPY build/libs/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+**规范要求**：
+- ✅ **MUST** 固定基础镜像版本
+- ⚠️ **SHOULD** 容器内运行用户非 root（待优化）
+- ⚠️ **MUST** 添加健康检查（待实现）
+
+**优化建议**：
+```dockerfile
+FROM openjdk:17-jdk-slim AS builder
+WORKDIR /app
+COPY . .
+RUN ./gradlew clean build -x test --no-daemon
+
+FROM openjdk:17-jdk-slim
+LABEL maintainer="FinancialApp Team"
+
+# 创建非 root 用户
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+WORKDIR /app
+COPY --from=builder /app/build/libs/*.jar app.jar
+RUN chown -R appuser:appuser /app
+
+USER appuser
+EXPOSE 8080
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8080/api/actuator/health || exit 1
+
+ENTRYPOINT ["java", \
+  "-XX:+UseContainerSupport", \
+  "-XX:MaxRAMPercentage=75.0", \
+  "-jar", "app.jar"]
+```
+
+### 9.2 Docker Compose
+
+**✅ 当前已实现**：
+```yaml
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: financial_app
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+
+volumes:
+  mysql-data:
+```
+
+**规范要求**：
+- ✅ **MUST** 数据持久化（已配置 volumes）
+- ✅ **MUST** 环境变量配置
+- ✅ **SHOULD** JVM 参数容器友好（待优化）
+
+---
+
+## 🔟 测试策略
+
+### 10.1 测试金字塔
+
+```
+        /\
+       /E2E\        ← 少量端到端测试
+      /------\
+     / 集成测试 \    ← 中等数量集成测试（Testcontainers）
+    /----------\
+   /   单元测试   \  ← 大量单元测试
+  /______________\
+```
+
+### 10.2 测试分层
+
+| 层级 | 测试类型 | 框架/工具 | 覆盖范围 |
+|------|---------|----------|---------|
+| **Domain** | 单元测试 | JUnit 5 + MockK | 业务规则 |
+| **Service** | 单元测试 | JUnit 5 + MockK | 用例逻辑 |
+| **Repository** | 集成测试 | Testcontainers + MySQL | 数据访问 |
+| **Controller** | 集成测试 | MockMvc + SpringBootTest | API 合同 |
+| **E2E** | 端到端 | Testcontainers | 完整流程 |
+
+**规范要求**：
+- ✅ **MUST** domain/service 层单测覆盖核心业务规则
+- ✅ **MUST** 每个 Bug 必须补回归测试
+- ⚠️ **SHOULD** repository 层使用 Testcontainers（待实现）
+- ✅ **SHOULD** controller 层使用 MockMvc 测试
+
+---
+
+## 1️⃣1️⃣ CI/CD 与发布
+
+### 11.1 质量门禁（推荐）
+
+**CI 检查清单**：
+```bash
+# 1. 静态检查
+./gradlew detekt
+./gradlew ktlintCheck
+
+# 2. 单元测试 + 覆盖率
+./gradlew test jacocoTestReport
+
+# 3. 依赖漏洞扫描
+./gradlew dependencyCheckAnalyze
+
+# 4. 构建
+./gradlew clean build
+```
+
+**质量门禁阈值**：
+- ✅ Detekt 检查通过
+- ✅ Ktlint 格式检查通过
+- ✅ 单元测试全部通过
+- ✅ 覆盖率 ≥ 70%（domain/application ≥ 80%）
+- ✅ 无高危依赖漏洞
+
+### 11.2 Git 工作流
+
+**规范要求**：
+- ✅ **MUST** 禁止直接 push main/master 分支
+- ✅ **MUST** PR 合并必须通过所有检查
+- ✅ **SHOULD** PR 描述包含变更点、风险、验证方式、回滚方式
+
+**PR 模板**：
+```markdown
+## 📝 变更说明
+简要描述本次变更的内容和目的。
+
+## 🔍 变更范围
+- [ ] Controller 层
+- [ ] Service 层
+- [ ] Repository 层
+- [ ] 数据库迁移
+- [ ] 配置文件
+
+## ✅ 验证方式
+描述如何验证本次变更是否正确。
+
+## 🚨 风险评估
+评估本次变更可能带来的风险。
+
+## 🔄 回滚方式
+描述如何回滚本次变更（如 Docker tag、版本号）。
+```
+
+---
+
+## 1️⃣2️⃣ 可验证点清单（DoD）
+
+**当前项目状态**：
+
+| 检查项 | 要求 | 状态 |
+|--------|------|------|
+| `application.yml` | 存在主配置文件 | ✅ |
+| `application-dev.yml` | 开发环境配置 | ✅ |
+| `application-prod.yml` | 生产环境配置 | ⚠️ 需创建 |
+| `spring.jpa.open-in-view=false` | 禁用 OSIV | ✅ |
+| `@RestControllerAdvice` | 统一异常处理 | ✅ |
+| Actuator | 健康检查 | ⚠️ 未实现 |
+| `@ConfigurationProperties` | 类型安全配置 | ⚠️ 待优化 |
+| Flyway | 数据库迁移 | ❌ 未实现 |
+| Testcontainers | 集成测试 | ❌ 未实现 |
+| JaCoCo | 代码覆盖率 | ❌ 未实现 |
+| Detekt/Ktlint | 静态检查 | ❌ 未实现 |
+| 依赖漏洞扫描 | 安全检查 | ❌ 未实现 |
+
+---
+
+## 📚 参考资源
+
+- [Spring Boot 官方文档](https://spring.io/projects/spring-boot)
+- [Spring Data JPA 参考](https://spring.io/projects/spring-data-jpa)
+- [Kotlin 语言文档](https://kotlinlang.org/docs/)
+- [Flyway 数据库迁移](https://flywaydb.org/)
+- [SpringDoc OpenAPI](https://springdoc.org/)
+- [Testcontainers](https://www.testcontainers.org/)
+- [OWASP Dependency-Check](https://owasp.org/www-project-dependency-check/)
+
+---
+
+**最后更新**: 2024-01-16
+**维护者**: FinancialApp Team
